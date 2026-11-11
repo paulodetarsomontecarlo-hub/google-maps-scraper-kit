@@ -14,7 +14,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
-st.set_page_config(page_title="Google Maps Leads", page_icon="📍", layout="wide")
+st.set_page_config(page_title="MC - Buscador de Leads por Geolocalidade", page_icon="📍", layout="wide")
 
 
 def password():
@@ -99,7 +99,7 @@ def parse_coords(text):
 if not password():
     st.stop()
 
-st.title("📍 Google Maps Leads")
+st.title("📍 MC - Buscador de Leads por Geolocalidade")
 st.caption("Raspa listagens do Google Maps e devolve nome, telefone, email, site, categoria, endereço, "
            "nota e avaliações. Uso pesado pode fazer o Google limitar o IP temporariamente.")
 
