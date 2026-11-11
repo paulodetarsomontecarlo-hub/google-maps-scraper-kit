@@ -1,0 +1,121 @@
+# Run a scrape on GitHub's own machines: Actions > scrape > Run workflow, fill in the search, and
+# download the CSV from the run's "Artifacts" section when it finishes. Use it in a PRIVATE repository:
+# the file holds phones and emails, and artifacts of a public repository can be downloaded by anyone
+# signed in to GitHub. The log prints counts only, never names, phones or emails.
+# Inputs reach the shell through env, never through ${{ }} in a script, so text typed into the form
+# cannot run as a command. docs/github-actions.md has the walkthrough.
+name: scrape
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: 'Busca / search, e.g. "dentistas em Curitiba" or "coffee shops in Austin TX"'
+        required: true
+        type: string
+      city:
+        description: "Cidade para centralizar o mapa / city to centre the map (optional: blank uses the keyword)"
+        required: false
+        type: string
+      depth:
+        description: "Depth: about 20 places per step (1 ≈ 20, 5 ≈ 100, Google stops near 120)"
+        required: false
+        default: "2"
+        type: string
+      lang:
+        description: "Language, 2 letters (pt, en, es...)"
+        required: false
+        default: "pt"
+        type: string
+      country:
+        description: "Country, 2 letters (br, us, pt...). GitHub's machines are in the US, so set it"
+        required: false
+        default: "br"
+        type: string
+      emails:
+        description: "Crawl websites for emails"
+        required: false
+        default: true
+        type: boolean
+      socials:
+        description: "Collect Instagram, Facebook, LinkedIn... links"
+        required: false
+        default: true
+        type: boolean
+      extra_args:
+        description: 'Extra scrape.py flags, e.g. "--no-website --min-rating 4" or "--grid 3"'
+        required: false
+        default: ""
+        type: string
+      max_time:
+        description: "Job time limit in seconds"
+        required: false
+        default: "600"
+        type: string
+      format:
+        description: "Output file format"
+        required: false
+        default: csv
+        type: choice
+        options: [csv, json]
+      retention_days:
+        description: "Days GitHub keeps the file (1-90)"
+        required: false
+        default: "7"
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: scrape  # one scrape at a time: parallel runs only raise the rate-limit risk
+  cancel-in-progress: false
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: start the engine
+        run: |
+          python scripts/engine.py start
+          python scripts/engine.py status
+      - name: scrape
+        env:
+          KEYWORD: ${{ inputs.keyword }}
+          CITY: ${{ inputs.city }}
+          DEPTH: ${{ inputs.depth }}
+          LANG_CODE: ${{ inputs.lang }}
+          COUNTRY: ${{ inputs.country }}
+          EMAILS: ${{ inputs.emails }}
+          SOCIALS: ${{ inputs.socials }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+          MAX_TIME: ${{ inputs.max_time }}
+          FORMAT: ${{ inputs.format }}
+        run: |
+          out="leads-${GITHUB_RUN_ID}.${FORMAT}"
+          args=("$KEYWORD" --depth "$DEPTH" --lang "$LANG_CODE" --max-time "$MAX_TIME" --out "$out")
+          [ -n "$CITY" ] && args+=(--city "$CITY")
+          [ -n "$COUNTRY" ] && args+=(--country "$COUNTRY")
+          [ "$EMAILS" = true ] || args+=(--no-email)
+          [ "$SOCIALS" = true ] || args+=(--no-socials)
+          read -r -a extra <<< "$EXTRA_ARGS"  # split on spaces only: no globbing, no command substitution
+          args+=("${extra[@]}")
+          set +e
+          python scripts/scrape.py "${args[@]}" > scrape.log 2>&1
+          code=$?
+          set -e
+          grep -v "^  •" scrape.log | tr '\r' '\n' | grep -v "^  status:" || true  # counts only, no names
+          if [ ! -s "$out" ]; then echo "::error::no results file (exit $code); see the log above"; exit 1; fi
+          echo "OUT=$out" >> "$GITHUB_ENV"
+          echo "### Scrape done: \`$out\` is in the Artifacts section below" >> "$GITHUB_STEP_SUMMARY"
+      - name: upload the results
+        uses: actions/upload-artifact@v4
+        with:
+          name: leads-${{ github.run_id }}
+          path: ${{ env.OUT }}
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: error
+      - name: stop
+        if: always()
+        run: python scripts/engine.py stop
