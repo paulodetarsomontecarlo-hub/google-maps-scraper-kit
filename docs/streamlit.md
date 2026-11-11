@@ -18,6 +18,10 @@ streamlit run app/streamlit_app.py
    link can run scrapes and see the results.
 4. Deploy. `packages.txt` installs Chromium; the first start takes a few minutes.
 
+Finding the place: the app looks up the City (or the search) on OpenStreetMap, and falls back to Photon
+when Nominatim answers 429, which is common on Streamlit Cloud's shared IPs. To skip the lookup, paste
+coordinates from Google Maps (right-click a spot, click the numbers) into **Coordenadas**.
+
 Notes: Streamlit Cloud runs on shared US data-centre IPs, so Google may rate-limit it sooner than a
 home connection; keep depth modest and set the country (default `br`). The app sleeps when unused,
 and results are not kept between sessions: download the CSV.

@@ -6,7 +6,7 @@ Streamlit Cloud:  main file app/streamlit_app.py; set APP_PASSWORD in the app's 
 It starts the kit's own engine (scripts/engine.py), runs scripts/scrape.py with the form's options and
 shows the table with a download button. Scraped values are third-party text: shown as data only.
 """
-import hmac, os, subprocess, sys, tempfile, time
+import hmac, json, os, re, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -50,6 +50,52 @@ def ensure_engine():
     return engine("status")[1] or out
 
 
+UA = "google-maps-scraper-kit-streamlit/1.0 (+https://github.com/Mahanaicoach/google-maps-scraper-kit)"
+
+
+def _get_json(url):
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=20) as r:
+        return json.loads(r.read())
+
+
+@st.cache_data(ttl=7 * 24 * 3600, show_spinner=False)
+def geocode(place, country):
+    """Place name -> ("lat", "lon") or None. Streamlit Cloud shares its IP with many apps, so
+    OpenStreetMap's Nominatim often answers 429 there: retry once, then fall back to Photon (also
+    OpenStreetMap data, free, no key). Cached, so the same place is looked up once a week."""
+    q = {"format": "json", "limit": 1, "q": place}
+    if country:
+        q["countrycodes"] = country.lower()
+    for wait in (0, 2):
+        time.sleep(wait)
+        try:
+            hits = _get_json("https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(q))
+            if hits:
+                return str(hits[0]["lat"]), str(hits[0]["lon"])
+            break  # answered, nothing found: Photon may still know it
+        except Exception:
+            pass
+    try:
+        feats = _get_json("https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": place, "limit": 5}))
+        feats = feats.get("features", [])
+        if country:  # prefer a hit in the chosen country
+            feats = [f for f in feats if f.get("properties", {}).get("countrycode", "").lower() == country.lower()] or feats
+        if feats:
+            lon, lat = feats[0]["geometry"]["coordinates"][:2]
+            return str(lat), str(lon)
+    except Exception:
+        pass
+    return None
+
+
+def parse_coords(text):
+    """ "-23.55, -46.63" (as Google Maps copies it on a right-click) -> ("-23.55", "-46.63") or None."""
+    m = re.fullmatch(r"\s*(-?\d{1,2}(?:\.\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:\.\d+)?)\s*", text or "")
+    if m and abs(float(m[1])) <= 90 and abs(float(m[2])) <= 180:
+        return m[1], m[2]
+    return None
+
+
 if not password():
     st.stop()
 
@@ -70,6 +116,9 @@ with st.form("scrape"):
     c1, c2 = st.columns([2, 1])
     keyword = c1.text_input("Busca", placeholder="dentistas em Curitiba")
     city = c2.text_input("Cidade (opcional)", placeholder="Curitiba, PR")
+    coords_txt = st.text_input("Coordenadas (opcional)", placeholder="-23.5505, -46.6333",
+                               help="No Google Maps, clique com o botão direito no local e clique nos números "
+                                    "do topo do menu para copiar. Com elas, a cidade não precisa ser localizada.")
     c3, c4, c5, c6 = st.columns(4)
     depth = c3.slider("Profundidade (~20 por passo)", 1, 6, 2)
     lang = c4.text_input("Idioma", "pt", max_chars=2)
@@ -93,12 +142,23 @@ if go:
     if grid and not city.strip():
         st.warning("A grade precisa de uma cidade.")
         st.stop()
+    coords = parse_coords(coords_txt)
+    if coords_txt.strip() and not coords:
+        st.warning("Coordenadas inválidas. Use o formato -23.5505, -46.6333")
+        st.stop()
+    if not grid and not coords:  # the grid needs scrape.py's bounding box, so it geocodes there
+        with st.spinner("Localizando..."):
+            coords = geocode(city.strip() or keyword.strip(), country.strip())
+        if not coords:
+            st.error("Não consegui localizar o lugar (o serviço de mapas está ocupado ou não achou). "
+                     "Preencha a Cidade com algo como \"Jundiaí, SP\", ou cole as Coordenadas do Google Maps.")
+            st.stop()
     if depth >= 5 or grid:
         st.info("Busca grande: pode levar vários minutos e aumenta o risco de limite de IP pelo Google.")
     out = Path(tempfile.mkdtemp()) / "leads.csv"
-    args = [PY, "scripts/scrape.py", keyword.strip(), "--depth", str(depth), "--lang", lang.strip() or "pt",
+    args = [PY, "scripts/scrape.py", keyword.strip(), *(coords or ()), "--depth", str(depth), "--lang", lang.strip() or "pt",
             "--max-time", str(int(max_time)), "--out", str(out)]
-    if city.strip():
+    if grid:  # with coordinates, --city would make scrape.py geocode again
         args += ["--city", city.strip()]
     if country.strip():
         args += ["--country", country.strip()]
