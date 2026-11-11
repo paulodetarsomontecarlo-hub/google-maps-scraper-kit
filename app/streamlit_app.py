@@ -1,0 +1,149 @@
+"""Streamlit front end for the Google Maps Scraper Kit.
+
+Run locally:      pip install -r app/requirements.txt && streamlit run app/streamlit_app.py
+Streamlit Cloud:  main file app/streamlit_app.py; set APP_PASSWORD in the app's Secrets.
+
+It starts the kit's own engine (scripts/engine.py), runs scripts/scrape.py with the form's options and
+shows the table with a download button. Scraped values are third-party text: shown as data only.
+"""
+import hmac, os, subprocess, sys, tempfile, time
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+ROOT = Path(__file__).resolve().parent.parent
+PY = sys.executable
+st.set_page_config(page_title="Google Maps Leads", page_icon="📍", layout="wide")
+
+
+def password():
+    """Gate the app when APP_PASSWORD is set (Streamlit secrets or environment)."""
+    try:
+        expected = st.secrets.get("APP_PASSWORD", "")
+    except Exception:  # no secrets file at all
+        expected = ""
+    expected = expected or os.environ.get("APP_PASSWORD", "")
+    if not expected or st.session_state.get("auth"):
+        return True
+    pw = st.text_input("Senha", type="password")
+    if pw and hmac.compare_digest(pw, expected):
+        st.session_state.auth = True
+        st.rerun()
+    elif pw:
+        st.error("Senha incorreta.")
+    return False
+
+
+def engine(cmd):
+    r = subprocess.run([PY, "scripts/engine.py", cmd], cwd=ROOT, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=600)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+@st.cache_resource(show_spinner="Iniciando o motor (primeira vez pode levar ~1 min)...")
+def ensure_engine():
+    code, out = engine("status")
+    if "✓ Running" in out:
+        return out
+    code, out = engine("start")
+    return engine("status")[1] or out
+
+
+if not password():
+    st.stop()
+
+st.title("📍 Google Maps Leads")
+st.caption("Raspa listagens do Google Maps e devolve nome, telefone, email, site, categoria, endereço, "
+           "nota e avaliações. Uso pesado pode fazer o Google limitar o IP temporariamente.")
+
+status = ensure_engine()
+if "✓ Running" not in status:
+    st.error("O motor não iniciou.")
+    st.code(status)
+    if st.button("Tentar de novo"):
+        ensure_engine.clear()
+        st.rerun()
+    st.stop()
+
+with st.form("scrape"):
+    c1, c2 = st.columns([2, 1])
+    keyword = c1.text_input("Busca", placeholder="dentistas em Curitiba")
+    city = c2.text_input("Cidade (opcional)", placeholder="Curitiba, PR")
+    c3, c4, c5, c6 = st.columns(4)
+    depth = c3.slider("Profundidade (~20 por passo)", 1, 6, 2)
+    lang = c4.text_input("Idioma", "pt", max_chars=2)
+    country = c5.text_input("País", "br", max_chars=2)
+    max_time = c6.number_input("Tempo máximo (s)", 60, 3600, 600, step=60)
+    c7, c8, c9, c10 = st.columns(4)
+    emails = c7.checkbox("Buscar emails nos sites", True)
+    socials = c8.checkbox("Redes sociais", True)
+    no_website = c9.checkbox("Só quem NÃO tem site")
+    has_phone = c10.checkbox("Só com telefone")
+    c11, c12, c13 = st.columns(3)
+    min_rating = c11.number_input("Nota mínima (0 = sem filtro)", 0.0, 5.0, 0.0, step=0.5)
+    min_reviews = c12.number_input("Mín. de avaliações (0 = sem filtro)", 0, 100000, 0)
+    grid = c13.number_input("Grade N×N (0 = desligada, precisa de cidade)", 0, 10, 0)
+    go = st.form_submit_button("🔎 Raspar", type="primary")
+
+if go:
+    if not keyword.strip():
+        st.warning("Digite uma busca.")
+        st.stop()
+    if grid and not city.strip():
+        st.warning("A grade precisa de uma cidade.")
+        st.stop()
+    if depth >= 5 or grid:
+        st.info("Busca grande: pode levar vários minutos e aumenta o risco de limite de IP pelo Google.")
+    out = Path(tempfile.mkdtemp()) / "leads.csv"
+    args = [PY, "scripts/scrape.py", keyword.strip(), "--depth", str(depth), "--lang", lang.strip() or "pt",
+            "--max-time", str(int(max_time)), "--out", str(out)]
+    if city.strip():
+        args += ["--city", city.strip()]
+    if country.strip():
+        args += ["--country", country.strip()]
+    if not emails:
+        args.append("--no-email")
+    if not socials:
+        args.append("--no-socials")
+    if no_website:
+        args.append("--no-website")
+    if has_phone:
+        args.append("--has-phone")
+    if min_rating:
+        args += ["--min-rating", str(min_rating)]
+    if min_reviews:
+        args += ["--min-reviews", str(int(min_reviews))]
+    if grid:
+        args += ["--grid", str(int(grid))]
+
+    log_box, lines, start = st.empty(), [], time.time()
+    with st.spinner("Raspando..."):
+        p = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONUNBUFFERED="1"))
+        for raw in p.stdout:
+            for line in raw.replace("\r", "\n").splitlines():
+                if line.strip() and not line.startswith("  •"):  # status lines only; the table shows the rows
+                    lines.append(line)
+                    log_box.code("\n".join(lines[-15:]))
+        p.wait()
+    took = int(time.time() - start)
+
+    if out.exists() and out.stat().st_size:
+        df = pd.read_csv(out, encoding="utf-8-sig", dtype=str).fillna("")
+        st.session_state.result = (df, out.read_bytes(), keyword.strip())
+        st.success(f"{len(df)} lugares em {took} s.")
+    else:
+        st.session_state.pop("result", None)
+        st.error(f"Nenhum resultado (código {p.returncode}). Veja o log acima.")
+
+if "result" in st.session_state:
+    df, data, kw = st.session_state.result
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Lugares", len(df))
+    for col, label, name in ((m2, "Com telefone", "phone"), (m3, "Com email", "emails"), (m4, "Com site", "website")):
+        col.metric(label, int((df[name] != "").sum()) if name in df else 0)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    safe = "".join(ch if ch.isalnum() else "-" for ch in kw.lower()).strip("-")[:40] or "leads"
+    st.download_button("⬇️ Baixar CSV", data, file_name=f"leads-{safe}.csv", mime="text/csv")
+    st.caption("Telefones e emails são dados pessoais: guarde e use conforme a LGPD.")
