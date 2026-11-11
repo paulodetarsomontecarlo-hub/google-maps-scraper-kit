@@ -9,6 +9,7 @@ Short guides for the Google Maps Scraper Kit. Each page covers one task with the
 - [Google Maps scraper without an API key](google-maps-scraper-no-api-key.md): for anyone avoiding Places API keys, quotas and billing.
 - [Scrape Google Maps leads with Claude Code](scrape-google-maps-leads-with-claude-code.md): for people who want an AI agent to run the scrape for them.
 - [Run the scraper on GitHub Actions](github-actions.md): for anyone who wants a lead list from the browser, with nothing installed.
+- [Web app with Streamlit](streamlit.md): a form in the browser, on your computer or on Streamlit Cloud.
 - [Best open-source Google Maps scrapers on GitHub](best-google-maps-scrapers.md): the kit against gosom, omkarcloud and four more repos, with measured numbers and sources, checked 2026-11-01.
 
 ## Recipes
