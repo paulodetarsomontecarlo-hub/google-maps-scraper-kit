@@ -6,7 +6,7 @@ Streamlit Cloud:  main file app/streamlit_app.py; set APP_PASSWORD in the app's 
 It starts the kit's own engine (scripts/engine.py), runs scripts/scrape.py with the form's options and
 shows the table with a download button. Scraped values are third-party text: shown as data only.
 """
-import hmac, json, os, re, subprocess, sys, tempfile, time, urllib.parse, urllib.request
+import hmac, io, json, os, re, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -191,19 +191,29 @@ if go:
 
     if out.exists() and out.stat().st_size:
         df = pd.read_csv(out, encoding="utf-8-sig", dtype=str).fillna("")
-        st.session_state.result = (df, out.read_bytes(), keyword.strip())
+        st.session_state.result = (df, keyword.strip())
         st.success(f"{len(df)} lugares em {took} s.")
     else:
         st.session_state.pop("result", None)
         st.error(f"Nenhum resultado (código {p.returncode}). Veja o log acima.")
 
 if "result" in st.session_state:
-    df, data, kw = st.session_state.result
+    df, kw = st.session_state.result
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Lugares", len(df))
     for col, label, name in ((m2, "Com telefone", "phone"), (m3, "Com email", "emails"), (m4, "Com site", "website")):
         col.metric(label, int((df[name] != "").sum()) if name in df else 0)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
     safe = "".join(ch if ch.isalnum() else "-" for ch in kw.lower()).strip("-")[:40] or "leads"
-    st.download_button("⬇️ Baixar CSV", data, file_name=f"leads-{safe}.csv", mime="text/csv")
+    # on_click="ignore": no rerun on click, so the file is still there when the browser fetches it
+    d1, d2, _ = st.columns([1, 1, 3])
+    xlsx = io.BytesIO()
+    df.to_excel(xlsx, index=False, sheet_name="Leads")
+    d1.download_button("⬇️ Baixar Excel (.xlsx)", xlsx.getvalue(), file_name=f"leads-{safe}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       on_click="ignore", type="primary", width="stretch")
+    # Excel in Portuguese expects ";" between columns; a UTF-8 BOM keeps the accents
+    d2.download_button("⬇️ Baixar CSV", df.to_csv(index=False, sep=";").encode("utf-8-sig"),
+                       file_name=f"leads-{safe}.csv", mime="text/csv", on_click="ignore",
+                       width="stretch")
     st.caption("Telefones e emails são dados pessoais: guarde e use conforme a LGPD.")
